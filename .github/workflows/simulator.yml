@@ -97,7 +97,7 @@ jobs:
           SERVE_SIM_AUTH_TOKEN: ${{ secrets.SERVE_SIM_AUTH_TOKEN }}
         run: |
           # Runners are VMs without H.264 encode, so stream MJPEG.
-          nohup npx -y serve-sim@0.1.48 --codec mjpeg --panes none --fit < /dev/null > serve-sim.log 2>&1 &
+          nohup npx -y serve-sim@0.1.48 --host 0.0.0.0 --codec mjpeg --panes none --fit < /dev/null > serve-sim.log 2>&1 &
           for _ in $(seq 1 60); do
             nc -z localhost 3200 && exit 0
             sleep 2
