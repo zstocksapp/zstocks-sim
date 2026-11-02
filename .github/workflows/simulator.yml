@@ -1,0 +1,114 @@
+name: iOS Simulator Session
+
+# Boots an iOS 26 Simulator, installs the latest simulator build of the app from
+# the private zstocksapp/zstocks repo, and exposes the screen over VNC through
+# Tailscale. Cancel the run to end a session early.
+#
+# This repo is public, so run logs are too: never upload the app as an artifact
+# and never print credentials or connection details.
+#
+# Required repository secrets:
+#   ZSTOCKS_READ_TOKEN – fine-grained PAT for zstocksapp/zstocks with Actions: read
+#   TS_AUTHKEY         – Tailscale ephemeral, reusable auth key
+#   VNC_PASSWORD       – VNC password (8 characters max)
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration_minutes:
+        description: Minutes to keep the Simulator running
+        type: number
+        default: 60
+      run_id:
+        description: build-ios.yml run ID (blank = latest successful)
+        type: string
+        required: false
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  session:
+    name: Simulator session
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - name: 🔍 Find simulator build
+        id: build
+        env:
+          GH_TOKEN: ${{ secrets.ZSTOCKS_READ_TOKEN }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          if [ -z "$RUN_ID" ]; then
+            RUN_ID=$(gh run list -R zstocksapp/zstocks --workflow build-ios.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId')
+          fi
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+
+      - name: 📥 Download simulator build
+        uses: actions/download-artifact@v8
+        with:
+          name: ios-simulator-build
+          path: build
+          repository: zstocksapp/zstocks
+          run-id: ${{ steps.build.outputs.run_id }}
+          github-token: ${{ secrets.ZSTOCKS_READ_TOKEN }}
+
+      - name: 📦 Extract app
+        id: app
+        run: |
+          mkdir app
+          tar -xzf build/app-ios-simulator.tar.gz -C app
+          APP_PATH=$(find "$PWD/app" -type d -name '*.app' -maxdepth 3 | head -n 1)
+          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist")
+          echo "path=$APP_PATH" >> "$GITHUB_OUTPUT"
+          echo "bundle_id=$BUNDLE_ID" >> "$GITHUB_OUTPUT"
+
+      - name: 📱 Boot Simulator
+        id: simulator
+        uses: futureware-tech/simulator-action@v6
+        with:
+          model: iPhone 17
+          os: iOS
+          os_version: ">=26.0"
+          wait_for_boot: true
+          shutdown_after_job: true
+
+      - name: 🚀 Install and launch app
+        env:
+          UDID: ${{ steps.simulator.outputs.udid }}
+          APP_PATH: ${{ steps.app.outputs.path }}
+          BUNDLE_ID: ${{ steps.app.outputs.bundle_id }}
+        run: |
+          open -a Simulator --args -CurrentDeviceUDID "$UDID"
+          xcrun simctl install "$UDID" "$APP_PATH"
+          xcrun simctl launch "$UDID" "$BUNDLE_ID"
+
+      - name: 🖥 Enable Screen Sharing
+        env:
+          VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
+        run: |
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -activate -configure -access -on -privs -all -users runner \
+            -clientopts -setvnclegacy -vnclegacy yes -setvncpw -vncpw "$VNC_PASSWORD" \
+            -restart -agent -console > /dev/null
+          for _ in $(seq 1 30); do
+            nc -z localhost 5900 && break
+            sleep 2
+          done
+          nc -z localhost 5900
+
+      - name: 🔒 Join tailnet
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TS_AUTHKEY }}
+          hostname: zstocks-sim
+          log-mode: quiet
+
+      - name: ⏳ Keep session alive
+        env:
+          DURATION_MINUTES: ${{ inputs.duration_minutes }}
+        run: sleep $((DURATION_MINUTES * 60))
