@@ -1,16 +1,16 @@
 name: iOS Simulator Session
 
 # Boots an iOS 26 Simulator, installs the latest simulator build of the app from
-# the private zstocksapp/zstocks repo, and exposes the screen over VNC through
-# Tailscale. Cancel the run to end a session early.
+# the private zstocksapp/zstocks repo, and streams it to a browser with serve-sim
+# over Tailscale. Cancel the run to end a session early.
 #
 # This repo is public, so run logs are too: never upload the app as an artifact
 # and never print credentials or connection details.
 #
 # Required repository secrets:
-#   ZSTOCKS_READ_TOKEN – fine-grained PAT for zstocksapp/zstocks with Actions: read
-#   TS_AUTHKEY         – Tailscale ephemeral, reusable auth key
-#   VNC_PASSWORD       – VNC password (8 characters max)
+#   ZSTOCKS_READ_TOKEN   – fine-grained PAT for zstocksapp/zstocks with Actions: read
+#   TS_AUTHKEY           – Tailscale ephemeral, reusable auth key
+#   SERVE_SIM_AUTH_TOKEN – token for the browser link
 
 on:
   workflow_dispatch:
@@ -87,19 +87,23 @@ jobs:
           xcrun simctl install "$UDID" "$APP_PATH"
           xcrun simctl launch "$UDID" "$BUNDLE_ID"
 
-      - name: 🖥 Enable Screen Sharing
+      - name: 🏗 Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: 🖥 Start browser stream
         env:
-          VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
+          SERVE_SIM_AUTH_TOKEN: ${{ secrets.SERVE_SIM_AUTH_TOKEN }}
         run: |
-          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-            -activate -configure -access -on -privs -all -users runner \
-            -clientopts -setvnclegacy -vnclegacy yes -setvncpw -vncpw "$VNC_PASSWORD" \
-            -restart -agent -console > /dev/null
-          for _ in $(seq 1 30); do
-            nc -z localhost 5900 && break
+          # Runners are VMs without H.264 encode, so stream MJPEG.
+          nohup npx -y serve-sim@0.1.48 --codec mjpeg --panes none --fit < /dev/null > serve-sim.log 2>&1 &
+          for _ in $(seq 1 60); do
+            nc -z localhost 3200 && exit 0
             sleep 2
           done
-          nc -z localhost 5900
+          cat serve-sim.log
+          exit 1
 
       - name: 🔒 Join tailnet
         uses: tailscale/github-action@v4
