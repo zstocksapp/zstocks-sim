@@ -2,14 +2,14 @@ name: iOS Simulator Session
 
 # Boots an iOS 26 Simulator, installs the latest simulator build of the app from
 # the private zstocksapp/zstocks repo, and streams it to a browser with serve-sim
-# through a Cloudflare quick tunnel. Cancel the run to end a session early.
+# over Tailscale. Cancel the run to end a session early.
 #
 # This repo is public, so run logs are too: never upload the app as an artifact
-# and never print credentials. The tunnel URL is printed, so the auth token is
-# the only thing guarding the stream.
+# and never print credentials or connection details.
 #
 # Required repository secrets:
 #   ZSTOCKS_READ_TOKEN   – fine-grained PAT for zstocksapp/zstocks with Actions: read
+#   TS_AUTHKEY           – Tailscale ephemeral, reusable auth key
 #   SERVE_SIM_AUTH_TOKEN – token for the browser link
 
 on:
@@ -30,7 +30,6 @@ concurrency:
 
 permissions:
   contents: read
-  statuses: write
 
 jobs:
   session:
@@ -97,7 +96,7 @@ jobs:
         env:
           SERVE_SIM_AUTH_TOKEN: ${{ secrets.SERVE_SIM_AUTH_TOKEN }}
         run: |
-          nohup npx -y serve-sim@0.1.48 --codec auto --panes none --fit < /dev/null > serve-sim.log 2>&1 &
+          nohup npx -y serve-sim@0.1.48 --host 0.0.0.0 --codec auto --panes none --fit < /dev/null > serve-sim.log 2>&1 &
           for _ in $(seq 1 60); do
             nc -z localhost 3200 && exit 0
             sleep 2
@@ -105,24 +104,12 @@ jobs:
           cat serve-sim.log
           exit 1
 
-      - name: 🌐 Open tunnel
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-arm64.tgz | tar -xz
-          nohup ./cloudflared tunnel --url http://localhost:3200 --no-autoupdate < /dev/null > cloudflared.log 2>&1 &
-          for _ in $(seq 1 60); do
-            URL=$(grep -o -m 1 'https://[a-z0-9-]*\.trycloudflare\.com' cloudflared.log || true)
-            if [ -n "$URL" ]; then
-              echo "::notice title=Simulator::Open $URL/#token=<SERVE_SIM_AUTH_TOKEN>"
-              # Annotations only appear once the job ends; a commit status links the URL right away.
-              gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state=success -f context=simulator                 -f target_url="$URL" -f description="Append /#token=<SERVE_SIM_AUTH_TOKEN>" > /dev/null
-              exit 0
-            fi
-            sleep 2
-          done
-          cat cloudflared.log
-          exit 1
+      - name: 🔒 Join tailnet
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TS_AUTHKEY }}
+          hostname: zstocks-sim
+          log-mode: quiet
 
       - name: ⏳ Keep session alive
         env:
