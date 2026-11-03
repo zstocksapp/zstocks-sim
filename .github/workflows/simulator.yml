@@ -30,6 +30,7 @@ concurrency:
 
 permissions:
   contents: read
+  statuses: write
 
 jobs:
   session:
@@ -105,6 +106,8 @@ jobs:
           exit 1
 
       - name: 🌐 Open tunnel
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-arm64.tgz | tar -xz
           nohup ./cloudflared tunnel --url http://localhost:3200 --no-autoupdate < /dev/null > cloudflared.log 2>&1 &
@@ -112,6 +115,8 @@ jobs:
             URL=$(grep -o -m 1 'https://[a-z0-9-]*\.trycloudflare\.com' cloudflared.log || true)
             if [ -n "$URL" ]; then
               echo "::notice title=Simulator::Open $URL/#token=<SERVE_SIM_AUTH_TOKEN>"
+              # Annotations only appear once the job ends; a commit status links the URL right away.
+              gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state=success -f context=simulator                 -f target_url="$URL" -f description="Append /#token=<SERVE_SIM_AUTH_TOKEN>" > /dev/null
               exit 0
             fi
             sleep 2
